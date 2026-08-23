@@ -64,11 +64,12 @@ def _install_adk_stub() -> None:
             self.escalate = escalate
 
     class Event:
-        def __init__(self, author=None, actions=None, content=None, timestamp=None):
+        def __init__(self, author=None, actions=None, content=None, timestamp=None, error_message=None):
             self.author = author
             self.actions = actions
             self.content = content
             self.timestamp = timestamp
+            self.error_message = error_message
 
         def is_final_response(self):
             return True
@@ -81,37 +82,31 @@ def _install_adk_stub() -> None:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
-    class ReadonlyContext:
-        pass
-
-    class BaseTool:
-        def __init__(self, name=None):
-            self.name = name
-
     class AgentTool:
         def __init__(self, agent=None):
             self.agent = agent
 
-    class McpToolset:
+    class MCPToolset:
         def __init__(self, connection_params=None, **kwargs):
             self.connection_params = connection_params
-
-        async def get_tools(self, readonly_context=None):
-            return []
 
     class StreamableHTTPConnectionParams:
         def __init__(self, url=None):
             self.url = url
 
-    class Part:
-        def __init__(self, text=None, data=None, mime_type=None):
-            self.text = text
+    class Blob:
+        def __init__(self, data=None, mime_type=None):
             self.data = data
             self.mime_type = mime_type
 
+    class Part:
+        def __init__(self, text=None, inline_data=None):
+            self.text = text
+            self.inline_data = inline_data
+
         @classmethod
         def from_bytes(cls, *, data, mime_type):
-            return cls(data=data, mime_type=mime_type)
+            return cls(inline_data=Blob(data=data, mime_type=mime_type))
 
     class Content:
         def __init__(self, role=None, parts=None):
@@ -140,19 +135,18 @@ def _install_adk_stub() -> None:
     adk_agents = _module("google.adk.agents", is_package=True)
     llm_agent = _module("google.adk.agents.llm_agent")
     llm_agent.Agent = Agent
-    readonly_context = _module("google.adk.agents.readonly_context")
-    readonly_context.ReadonlyContext = ReadonlyContext
 
     tools = _module("google.adk.tools", is_package=True)
-    tools.BaseTool = BaseTool
     tools.AgentTool = AgentTool
     mcp_tool = _module("google.adk.tools.mcp_tool", is_package=True)
-    mcp_tool.McpToolset = McpToolset
+    mcp_toolset = _module("google.adk.tools.mcp_tool.mcp_toolset")
+    mcp_toolset.MCPToolset = MCPToolset
     mcp_session_manager = _module("google.adk.tools.mcp_tool.mcp_session_manager")
     mcp_session_manager.StreamableHTTPConnectionParams = StreamableHTTPConnectionParams
 
     genai = _module("google.genai", is_package=True)
     genai_types = _module("google.genai.types")
+    genai_types.Blob = Blob
     genai_types.Part = Part
     genai_types.Content = Content
 
@@ -165,9 +159,9 @@ def _install_adk_stub() -> None:
         "google.adk.runners": runners,
         "google.adk.agents": adk_agents,
         "google.adk.agents.llm_agent": llm_agent,
-        "google.adk.agents.readonly_context": readonly_context,
         "google.adk.tools": tools,
         "google.adk.tools.mcp_tool": mcp_tool,
+        "google.adk.tools.mcp_tool.mcp_toolset": mcp_toolset,
         "google.adk.tools.mcp_tool.mcp_session_manager": mcp_session_manager,
         "google.genai": genai,
         "google.genai.types": genai_types,
@@ -175,18 +169,18 @@ def _install_adk_stub() -> None:
 
 
 def _install_fabrix_stub() -> None:
-    """Stand in for the ``fabrix.adk`` factory helpers the agents are built with."""
+    """Stand in for the ``fabrix.adk`` helpers the agents are built with."""
 
-    class FabrixApp:
-        def __init__(self, agent, app_name=None):
-            self.agent = agent
+    class RuntimeApp:
+        def __init__(self, runtime_root, app_name=None):
+            self.runtime_root = runtime_root
             self.app_name = app_name
 
     def build_model(model_name_or_id):
         return f"model:{model_name_or_id}"
 
-    def create_fabrix_app(agent, app_name=None):
-        return FabrixApp(agent, app_name=app_name)
+    def create_runtime_app(runtime_root, app_name=None):
+        return RuntimeApp(runtime_root, app_name=app_name)
 
     fabrix = _module("fabrix", is_package=True)
     adk = _module("fabrix.adk", is_package=True)
@@ -194,15 +188,15 @@ def _install_fabrix_stub() -> None:
     models = _module("fabrix.adk.models")
     models.build_model = build_model
 
-    factory = _module("fabrix.adk.factory")
-    factory.create_fabrix_app = create_fabrix_app
-    factory.FabrixApp = FabrixApp
+    runtime = _module("fabrix.adk.runtime")
+    runtime.create_runtime_app = create_runtime_app
+    runtime.RuntimeApp = RuntimeApp
 
     _register({
         "fabrix": fabrix,
         "fabrix.adk": adk,
         "fabrix.adk.models": models,
-        "fabrix.adk.factory": factory,
+        "fabrix.adk.runtime": runtime,
     })
 
 

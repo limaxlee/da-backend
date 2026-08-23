@@ -3,12 +3,13 @@ import logging
 from typing import Annotated
 from fastapi import APIRouter, status, HTTPException, Path, Depends, UploadFile, File
 
-from data_agent.dependencies import conversation_service
+from data_agent.dependencies import get_agent_runner, require_path_user
 from data_agent.schemas import RunAgentRequest, RunAgentResponse
+from data_agent.services import AgentRunner
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/apps", tags=["conversations"])
+router = APIRouter(prefix="/apps", tags=["runner"], dependencies=[Depends(require_path_user)])
 
 
 @router.post(
@@ -20,18 +21,19 @@ async def run(
         user_id: Annotated[str, Path()],
         session_id: Annotated[str, Path()],
         request: Annotated[RunAgentRequest, Depends()],
+        agent_runner: Annotated[AgentRunner, Depends(get_agent_runner)],
         image_file: UploadFile | None = File(None),
 ):
     t0 = time.monotonic()
-    logger.info(f"[TIMING] /run START session={session_id} query={request.query!r}")
+    logger.info(f"[TIMING] /run API START session={session_id} query={request.query!r}")
     try:
-        result = await conversation_service.run(
+        result = await agent_runner.run(
             user_id=user_id,
             session_id=session_id,
             request=request,
             image_file=image_file
         )
-        logger.info(f"[TIMING] /run END session={session_id} elapsed={time.monotonic()-t0:.2f}s")
+        logger.info(f"[TIMING] /run API END session={session_id} elapsed={time.monotonic()-t0:.2f}s")
         return result
     except Exception as e:
         logger.info(f"[TIMING] /run FAILED session={session_id} elapsed={time.monotonic()-t0:.2f}s")

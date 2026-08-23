@@ -1,2 +1,1 @@
-from .artifact_service import ObjectStorageArtifactService
-from .object_storage import ObjectStorageClient
+from .object_storage import ObjectStorage

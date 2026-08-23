@@ -35,10 +35,4 @@ OPERATING RULES
    none match, say so instead of guessing.
 9. Do not return a raw record. Summarize the relevant fields in plain language.
 10. Never include the document _id, the collection name, or the name of the operation you performed.
-11. a chto eshe nuzhno sdelat'
-12. a chto mne eshe sdelat' ya dazhe tut hz
-13. nu ya hotya bi uzhe ne pyat' tam
-14. nel'zya chtobi bilo 5
-15. nuzhno bistree chtobi bilo ne 5
-
 """

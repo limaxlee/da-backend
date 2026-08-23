@@ -3,13 +3,13 @@ from typing import Optional, Union, Any
 from google.adk.artifacts import BaseArtifactService
 from google.genai import types
 
-from data_agent.storage.object_storage import ObjectStorageClient
+from data_agent.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
 
-class ObjectStorageArtifactService(BaseArtifactService):
-    def __init__(self, storage: ObjectStorageClient):
+class OSArtifactService(BaseArtifactService):
+    def __init__(self, storage: ObjectStorage):
         self._storage = storage
 
     @staticmethod

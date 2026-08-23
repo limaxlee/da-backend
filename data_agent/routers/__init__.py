@@ -1,10 +1,12 @@
 from fastapi import APIRouter
 
-from .conversations import router as conversations_router
+from .auth import router as auth_router
 from .health import router as health_router
-from .sessions import router as sessions_router
+from .runner import router as runner_router
+from .session import router as session_router
 
 router = APIRouter()
 router.include_router(health_router)
-router.include_router(sessions_router)
-router.include_router(conversations_router)
+router.include_router(auth_router)
+router.include_router(session_router)
+router.include_router(runner_router)

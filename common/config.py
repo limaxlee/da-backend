@@ -19,6 +19,10 @@ _ENV_MAP = {
     "MONGODB_MCP_PORT": ("mongodb_mcp.port", int),
     "MILVUS_MCP_HOST": ("milvus_mcp.host", str),
     "MILVUS_MCP_PORT": ("milvus_mcp.port", int),
+    "AUTH_ENABLED": ("auth.enabled", lambda value: value.strip().lower() == "true"),
+    "AUTH_ISSUER": ("auth.issuer", str),
+    "AUTH_CLIENT_ID": ("auth.client_id", str),
+    "AUTH_REDIRECT_URI": ("auth.redirect_uri", str),
     "SESSION_DB_HOST": ("session_db.host", str),
     "SESSION_DB_PORT": ("session_db.port", int),
     "SESSION_DB_NAME": ("session_db.name", str),
@@ -76,6 +80,13 @@ class MCPConfig(BaseModel):
     port: int
 
 
+class AuthConfig(BaseModel):
+    enabled: bool = True
+    issuer: str = "https://genai.sec.samsung.net/iam-keycloak/realms/fabrix"
+    client_id: str = "fabrix-adk"
+    redirect_uri: str = ""  # empty -> built from the incoming request URL
+
+
 class SessionDBConfig(BaseModel):
     host: str
     port: int
@@ -96,6 +107,8 @@ class Settings(BaseSettings, extra="allow"):
     base_url: str
     otel_enabled: bool
     log_level: str
+
+    auth: AuthConfig = AuthConfig()
 
     mongodb_mcp: MCPConfig
     milvus_mcp: MCPConfig

@@ -9,7 +9,7 @@ from common.constants import APP_NAME, USER_AUTHOR
 from data_agent.schemas import (
     SessionInfo, ListSessionsResponse, CreateSessionResponse, RenameSessionRequest, CreateSessionTitleResponse
 )
-from data_agent.services.title_service import TitleService
+from data_agent.services.system_runner import SystemRunner
 from data_agent.utils import convert_unix_to_datetime
 
 logger = logging.getLogger(__name__)
@@ -20,10 +20,10 @@ def create_session_store() -> DatabaseSessionService:
     return DatabaseSessionService(db_url=f"postgresql+asyncpg://postgres@{db_url}")
 
 
-class SessionService:
-    def __init__(self, sessions: BaseSessionService, titles: TitleService):
-        self._sessions = sessions
-        self._titles = titles
+class DBSessionService:
+    def __init__(self, session_service: BaseSessionService, system_runner: SystemRunner):
+        self._session_service = session_service
+        self._system_runner = system_runner
         self._app_name = APP_NAME
 
     @staticmethod
@@ -40,7 +40,7 @@ class SessionService:
 
     async def list_sessions(self, user_id: str) -> ListSessionsResponse:
         try:
-            result = await self._sessions.list_sessions(app_name=self._app_name, user_id=user_id)
+            result = await self._session_service.list_sessions(app_name=self._app_name, user_id=user_id)
 
             sessions = []
             for session in result.sessions:
@@ -55,7 +55,7 @@ class SessionService:
                     )
                 )
 
-            logger.info(f"Retrieved session list of user {user_id}: {sessions}")
+            logger.info(f"Retrieved session list of user {user_id}: {[session.session_id for session in sessions]}")
             return ListSessionsResponse(sessions=sessions)
         except Exception as e:
             logger.exception(f"Failed to list sessions of user {user_id}: {str(e)}")
@@ -63,7 +63,7 @@ class SessionService:
 
     async def create_session(self, user_id: str) -> CreateSessionResponse:
         try:
-            session = await self._sessions.create_session(
+            session = await self._session_service.create_session(
                 app_name=self._app_name,
                 user_id=user_id,
                 session_id=uuid.uuid4().hex
@@ -77,7 +77,7 @@ class SessionService:
 
     async def create_session_title(self, user_id: str, session_id: str) -> CreateSessionTitleResponse:
         try:
-            session = await self._sessions.get_session(
+            session = await self._session_service.get_session(
                 app_name=self._app_name,
                 user_id=user_id,
                 session_id=session_id
@@ -89,7 +89,7 @@ class SessionService:
             if not user_message:
                 raise ValueError(f"Cannot create session title: session {session_id} has no user message")
 
-            session_title = await self._titles.create_session_title(
+            session_title = await self._system_runner.create_session_title(
                 user_id=user_id,
                 session_id=session_id,
                 user_message=user_message
@@ -99,7 +99,7 @@ class SessionService:
                 author="system",
                 actions=EventActions(state_delta={"session_title": session_title})
             )
-            await self._sessions.append_event(session, event)
+            await self._session_service.append_event(session, event)
 
             logger.info(f"Created a title {session_title} for session {session_id} of user {user_id}")
             return CreateSessionTitleResponse(session_title=session_title)
@@ -109,7 +109,7 @@ class SessionService:
 
     async def rename_session_title(self, user_id: str, session_id: str, request: RenameSessionRequest):
         try:
-            session = await self._sessions.get_session(
+            session = await self._session_service.get_session(
                 app_name=self._app_name,
                 user_id=user_id,
                 session_id=session_id
@@ -121,7 +121,7 @@ class SessionService:
                 author="system",
                 actions=EventActions(state_delta={"session_title": request.session_title})
             )
-            await self._sessions.append_event(session, event)
+            await self._session_service.append_event(session, event)
 
             logger.info(f"Renamed session {session_id} of user {user_id} to {request.session_title}")
         except Exception as e:
@@ -130,7 +130,7 @@ class SessionService:
 
     async def get_session(self, user_id: str, session_id: str) -> SessionInfo:
         try:
-            session = await self._sessions.get_session(
+            session = await self._session_service.get_session(
                 app_name=self._app_name,
                 user_id=user_id,
                 session_id=session_id
@@ -141,7 +141,7 @@ class SessionService:
             for event in session.events:
                 event.timestamp = convert_unix_to_datetime(event.timestamp)
 
-            logger.info(f"Retrieved {session_id} session info of user {user_id}: {session}")
+            logger.info(f"Retrieved {session_id} session info of user {user_id}")
             return SessionInfo(
                 session_id=session.id,
                 app_name=session.app_name,
@@ -156,7 +156,7 @@ class SessionService:
 
     async def delete_session(self, user_id: str, session_id: str):
         try:
-            await self._sessions.delete_session(
+            await self._session_service.delete_session(
                 app_name=self._app_name,
                 user_id=user_id,
                 session_id=session_id

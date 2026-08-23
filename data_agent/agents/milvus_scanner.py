@@ -1,6 +1,6 @@
 from fabrix.adk.models import build_model
 from google.adk.agents.llm_agent import Agent
-from google.adk.tools.mcp_tool import McpToolset
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from common.config import SETTINGS
@@ -16,7 +16,7 @@ milvus_agent = Agent(
     instruction=MILVUS_AGENT_INSTRUCTION,
     before_tool_callback=inject_pending_image,
     tools=[
-        McpToolset(connection_params=StreamableHTTPConnectionParams(
+        MCPToolset(connection_params=StreamableHTTPConnectionParams(
             url=f"http://{SETTINGS.milvus_mcp.host}:{SETTINGS.milvus_mcp.port}/mcp")
         )
     ]

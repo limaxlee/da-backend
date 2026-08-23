@@ -10,7 +10,7 @@ from data_agent.agents import system_app
 logger = logging.getLogger(__name__)
 
 
-class TitleService:
+class SystemRunner:
     def __init__(self):
         self._session_service = InMemorySessionService()
         self._runner = Runner(

@@ -1,0 +1,9 @@
+# Works whether the build context is the parent deploy folder or the repo itself
+venv/
+da-backend/venv/
+.git/
+da-backend/.git/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/*.log

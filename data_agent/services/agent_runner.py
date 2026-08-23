@@ -1,3 +1,4 @@
+import time
 import logging
 
 from fastapi import UploadFile
@@ -9,28 +10,26 @@ from google.genai import types
 from common.constants import APP_NAME
 from data_agent.agents import agent_app
 from data_agent.schemas import RunAgentRequest, RunAgentResponse
-from data_agent.storage import ObjectStorageArtifactService, ObjectStorageClient
+from data_agent.services.os_artifact import OSArtifactService
 from data_agent.utils import convert_unix_to_datetime
 
 logger = logging.getLogger(__name__)
 
 
-class ConversationService:
+class AgentRunner:
     def __init__(
             self,
-            sessions: BaseSessionService,
-            artifacts: ObjectStorageArtifactService,
-            storage: ObjectStorageClient
+            session_service: BaseSessionService,
+            artifact_service: OSArtifactService
     ):
-        self._sessions = sessions
-        self._artifacts = artifacts
-        self._storage = storage
+        self._session_service = session_service
+        self._artifact_service = artifact_service
         self._app_name = APP_NAME
         self._runner = Runner(
             app=agent_app,
             app_name=APP_NAME,
-            session_service=sessions,
-            artifact_service=artifacts
+            session_service=session_service,
+            artifact_service=artifact_service
         )
 
     async def run(
@@ -41,6 +40,8 @@ class ConversationService:
             image_file: UploadFile | None = None
     ) -> RunAgentResponse:
         try:
+            t1 = time.monotonic()
+            logger.info(f"[TIMING] runner START session={session_id} query={request.query!r}")
             parts = []
 
             if image_file is not None:
@@ -48,14 +49,14 @@ class ConversationService:
                 content_type = image_file.content_type or "image/jpeg"
 
                 parts.append(types.Part.from_bytes(data=image_bytes, mime_type=content_type))
-                version = await self._artifacts.save_artifact(
+                version = await self._artifact_service.save_artifact(
                     app_name=self._app_name,
                     user_id=user_id,
                     session_id=session_id,
                     filename=image_file.filename,
                     artifact=types.Part.from_bytes(data=image_bytes, mime_type=content_type)
                 )
-                key = self._artifacts.get_object_key(
+                key = self._artifact_service.get_object_key(
                     app_name=self._app_name,
                     user_id=user_id,
                     session_id=session_id,
@@ -63,59 +64,39 @@ class ConversationService:
                     version=version
                 )
 
-                session = await self._sessions.get_session(
+                session = await self._session_service.get_session(
                     app_name=self._app_name,
                     user_id=user_id,
                     session_id=session_id
                 )
 
-                await self._sessions.append_event(session, Event(
+                await self._session_service.append_event(session, Event(
                     author="system",
                     actions=EventActions(state_delta={"pending_image": {
                         "key": key, "filename": image_file.filename, "content_type": content_type
                     }})
                 ))
 
-                # --- ALTERNATIVE (turn-scoped pending image) -------------------------------------
-                # Replaces the get_session + append_event block above. The "temp:" prefix keeps the
-                # key out of persisted session state, so it is gone once this invocation ends and a
-                # later text-only turn cannot reuse a stale image. Declare `state_delta = None`
-                # above `if image_file is not None:` and pass it to run_async (see below).
-                #
-                # state_delta = {PENDING_IMAGE_KEY: {
-                #     "key": key, "filename": image_file.filename, "content_type": content_type
-                # }}
-                # --------------------------------------------------------------------------------
-
             parts.append(types.Part(text=request.query))
             content = types.Content(role="user", parts=parts)
             events = self._runner.run_async(user_id=user_id, session_id=session_id, new_message=content)
 
-            # --- ALTERNATIVE (turn-scoped pending image) ----------------------------------------
-            # ADK attaches state_delta to the user Event it creates for new_message, so no separate
-            # system event is appended to the transcript. Verify Runner.run_async accepts
-            # state_delta in the installed ADK version before switching.
-            #
-            # events = self._runner.run_async(
-            #     user_id=user_id,
-            #     session_id=session_id,
-            #     new_message=content,
-            #     state_delta=state_delta
-            # )
-            # ------------------------------------------------------------------------------------
             response = "No response received."
             timestamp = None
+            final_seen = False
 
             async for event in events:
-                if event.is_final_response():
+                logger.info(f"[TIMING] event author={event.author} type={type(event).__name__} at={time.time()}")
+                if not final_seen and event.is_final_response():
+                    final_seen = True
                     timestamp = event.timestamp
                     if event.content and event.content.parts:
                         response = event.content.parts[-1].text
                     elif event.actions and event.actions.escalate:
                         response = f"Agent escalated: {event.error_message or 'No specific message.'}"
-                    break
 
             logger.info(f"Run agent with request {response}")
+            logger.info(f"[TIMING] runner API END session={session_id} elapsed={time.monotonic() - t1:.2f}s")
             return RunAgentResponse(response=response, timestamp=convert_unix_to_datetime(timestamp))
         except Exception as e:
             logger.exception(f"Failed to run agent {session_id} of user {user_id}: {str(e)}")

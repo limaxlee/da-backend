@@ -1,9 +1,9 @@
-import asyncio
 import logging
 from contextlib import AsyncExitStack
 
 import aiofiles
 from aiobotocore.session import get_session
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from common.config import SETTINGS
@@ -11,12 +11,11 @@ from common.config import SETTINGS
 logger = logging.getLogger(__name__)
 
 
-class ObjectStorageClient:
+class ObjectStorage:
     def __init__(self):
         self._client = None
         self._session = get_session()
         self._exit_stack = AsyncExitStack()
-        self._lock = asyncio.Lock()
         self._config = {
             "bucket": SETTINGS.object_storage.bucket,
             "endpoint": SETTINGS.object_storage.endpoint,
@@ -31,74 +30,37 @@ class ObjectStorageClient:
             raise RuntimeError("Object storage is not connected: connect() must run at application startup")
         return self._client
 
-    async def connect(self) -> "ObjectStorageClient":
-        if self._client is not None:
+    async def connect(self) -> "ObjectStorage":
+        if self._client:
             return self
 
-        async with self._lock:
-            if self._client is not None:
-                return self
+        try:
+            self._client = await self._exit_stack.enter_async_context(self._session.create_client(
+                "s3",
+                endpoint_url=self._config["endpoint"],
+                aws_access_key_id=self._config["access_key"],
+                aws_secret_access_key=self._config["secret_key"],
+                config=Config(signature_version="s3v4")
+            ))
+            logger.info("Connected to object storage successfully")
 
-            try:
-                self._client = await self._exit_stack.enter_async_context(self._session.create_client(
-                    "s3",
-                    endpoint_url=self._config["endpoint"],
-                    aws_access_key_id=self._config["access_key"],
-                    aws_secret_access_key=self._config["secret_key"]
-                ))
-            except (BotoCoreError, ClientError):
-                logger.exception("Failed to connect to object storage")
-                await self._exit_stack.aclose()
-                self._client = None
-                raise
-            except Exception:
-                logger.exception("Unexpected error occurred during object storage connection")
-                await self._exit_stack.aclose()
-                self._client = None
-                raise
+            return self
+        except (BotoCoreError, ClientError) as e:
+            logger.exception(f"Failed to connect to object storage: {str(e)}")
+            raise
+        except Exception as e:
+            logger.exception(f"Unexpected error occurred during object storage connection: {str(e)}")
+            raise
 
-        logger.info("Connected to object storage")
-        return self
-
-    async def disconnect(self) -> None:
-        if self._client is None:
+    async def close(self) -> None:
+        if not self._client:
             return
 
-        await self._exit_stack.aclose()
-        self._client = None
-        logger.info("Disconnected from object storage")
-
-    async def __aenter__(self):
-        return await self.connect()
-
-    async def __aexit__(self, *exception_details):
-        await self.disconnect()
-
-    async def create_bucket(self, bucket: str = None) -> bool:
-        bucket = bucket if bucket else self._bucket
-        request_id = ""
-
         try:
-            response = await self.client.create_bucket(Bucket=bucket)
-            request_id = response.get("ResponseMetadata", {}).get("RequestId")
-
-            logger.info(f"[{request_id}] Bucket '{bucket}' created successfully")
-            return True
-        except Exception as e:
-            logger.exception(f"[{request_id}] Failed to create bucket '{bucket}': {e}")
-            return False
-
-    async def list_buckets(self) -> list[str] | None:
-        request_id = ""
-
-        try:
-            response = await self.client.list_buckets()
-            request_id = response.get("ResponseMetadata", {}).get("RequestId")
-            buckets = [bucket["Name"] for bucket in response.get("Buckets", [])]
-            return buckets
-        except Exception as e:
-            logger.exception(f"[{request_id}] Failed to list buckets: {e}")
-            return None
+            await self._exit_stack.aclose()
+            logger.info("Closed object storage client")
+        finally:
+            self._client = None
 
     async def list_paginated_objects(
             self,
@@ -126,19 +88,6 @@ class ObjectStorageClient:
         except Exception as e:
             logger.exception(f"Failed to list objects in bucket '{bucket}': {e}")
             return None
-
-    async def delete_bucket(self, bucket: str = None) -> bool:
-        bucket = bucket if bucket else self._bucket
-        request_id = ""
-
-        try:
-            response = await self.client.delete_bucket(Bucket=bucket)
-            request_id = response.get("ResponseMetadata", {}).get("RequestId")
-            logger.info(f"[{request_id}] Bucket '{bucket}' deleted successfully")
-            return True
-        except Exception as e:
-            logger.exception(f"[{request_id}] Failed to delete bucket '{bucket}': {e}")
-            return False
 
     async def upload_object(
             self,
@@ -168,22 +117,6 @@ class ObjectStorageClient:
             logger.exception(f"[{request_id}] Failed to upload object '{key}': {e}")
             return False
 
-    async def copy_object(self, destination_key: str, source_key: str, bucket: str = None) -> bool:
-        bucket = bucket if bucket else self._bucket
-        request_id = ""
-
-        try:
-            response = await self.client.copy_object(Bucket=bucket, Key=destination_key, CopySource={
-                "Bucket": bucket,
-                "Key": source_key
-            })
-            request_id = response.get("ResponseMetadata", {}).get("RequestId")
-            logger.info(f"[{request_id}] Object copied to '{bucket}' from '{source_key}' to '{destination_key}'")
-            return True
-        except Exception as e:
-            logger.exception(f"[{request_id}] Failed to copy object from '{source_key}' to '{destination_key}': {e}")
-            return False
-
     async def retrieve_object(self, key: str, bucket: str = None) -> bytes | None:
         bucket = bucket if bucket else self._bucket
         request_id = ""
@@ -201,25 +134,6 @@ class ObjectStorageClient:
             logger.exception(f"[{request_id}] Failed to retrieve object '{key}' from bucket '{bucket}': {e}")
             return None
 
-    async def retrieve_object_in_chunks(self, key: str, bucket: str = None):
-        bucket = bucket if bucket else self._bucket
-        request_id = ""
-
-        try:
-            response = await self.client.get_object(Bucket=bucket, Key=key)
-            request_id = response.get("ResponseMetadata", {}).get("RequestId")
-            body = response["Body"]
-
-            async def get_chunks():
-                async for chunk in body.iter_chunks(1024 * 1024):
-                    if chunk:
-                        yield chunk
-
-            logger.info(f"[{request_id}] Data retrieved in chunks from '{bucket}:{key}'")
-            return get_chunks()
-        except Exception as e:
-            logger.exception(f"[{request_id}] Failed to retrieve object '{key}' in chunks from bucket '{bucket}': {e}")
-
     async def retrieve_object_info(self, key: str, bucket: str = None) -> dict | None:
         bucket = bucket if bucket else self._bucket
 
@@ -230,17 +144,6 @@ class ObjectStorageClient:
         except Exception as e:
             logger.exception(f"Failed to retrieve ACL: {e}")
             return None
-
-    async def delete_object(self, key: str, bucket: str = None) -> bool:
-        bucket = bucket if bucket else self._bucket
-
-        try:
-            await self.client.delete_object(Bucket=bucket, Key=key)
-            logger.info(f"Object '{key}' deleted from '{bucket}'")
-            return True
-        except Exception as e:
-            logger.exception(f"Failed to delete object '{key}': {e}")
-            return False
 
     async def delete_objects(self, keys: list[str], bucket: str = None) -> bool:
         bucket = bucket if bucket else self._bucket
@@ -258,21 +161,3 @@ class ObjectStorageClient:
         except Exception as e:
             logger.exception(f"[{request_id}] Failed to delete objects: {e}")
             return False
-
-    async def get_bucket_size(self, bucket: str = None) -> int | None:
-        bucket = bucket if bucket else self._bucket
-
-        try:
-            total_size = 0
-            paginator = self.client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(Bucket=bucket)
-
-            async for page in pages:
-                if "Contents" in page:
-                    for obj in page["Contents"]:
-                        total_size += obj["Size"]
-
-            return total_size
-        except Exception as e:
-            logger.exception(f"Failed to get bucket size for '{bucket}': {e}")
-            return None

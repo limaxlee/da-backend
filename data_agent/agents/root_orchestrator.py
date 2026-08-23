@@ -1,4 +1,4 @@
-from fabrix.adk.factory import create_fabrix_app
+from fabrix.adk.runtime import create_runtime_app
 from fabrix.adk.models import build_model
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools import AgentTool
@@ -20,4 +20,4 @@ root_agent = Agent(
     tools=[AgentTool(agent=milvus_agent), AgentTool(agent=mongodb_agent)]
 )
 
-agent_app = create_fabrix_app(root_agent, app_name=APP_NAME)
+agent_app = create_runtime_app(root_agent, app_name=APP_NAME)
