@@ -109,6 +109,7 @@ Every variable maps to a `config.yaml` key (see `_ENV_MAP` in [common/config.py]
 | `AUTH_ISSUER` | `auth.issuer` | Fabrix Keycloak realm URL |
 | `AUTH_CLIENT_ID` | `auth.client_id` | `fabrix-adk` |
 | `AUTH_REDIRECT_URI` | `auth.redirect_uri` | **Set explicitly behind a reverse proxy** — empty means "derive from the incoming request URL", which is wrong behind TLS-terminating proxies |
+| `AUTH_FRONTEND_URL` | `auth.frontend_url` | Frontend origin that `/auth/callback` 302-redirects to with the tokens in the URL fragment (e.g. `https://app.example`); empty falls back to JSON in the tab |
 | `SESSION_DB_HOST` / `SESSION_DB_PORT` / `SESSION_DB_NAME` | `session_db.*` | Postgres session store |
 | `OBJECT_STORAGE_BUCKET` / `OBJECT_STORAGE_ENDPOINT` | `object_storage.*` | |
 | `OBJECT_STORAGE_ACCESS_KEY` / `OBJECT_STORAGE_SECRET_KEY` | `object_storage.*` | **Secrets — env vars only, never in the image** |
@@ -128,6 +129,7 @@ docker run -d --name cosmo-data-agent \
   -e OBJECT_STORAGE_ACCESS_KEY=... \
   -e OBJECT_STORAGE_SECRET_KEY=... \
   -e AUTH_REDIRECT_URI=https://<public-host>/auth/callback \
+  -e AUTH_FRONTEND_URL=https://<frontend-host> \
   cosmo-data-agent
 ```
 
@@ -188,6 +190,7 @@ Choose this route only if you are willing to restructure into a standard workspa
 - [ ] Production `config.yaml` contains no secrets; secrets injected via `docker run -e`.
 - [ ] MCP hosts, Postgres host, and object storage endpoint are reachable from inside the container (not `localhost`).
 - [ ] `AUTH_REDIRECT_URI` set explicitly if behind a reverse proxy.
+- [ ] `AUTH_FRONTEND_URL` points at this environment's frontend origin (and the redirect URI is whitelisted on the Keycloak client).
 - [ ] `/health` responds after start.
 - [ ] **One real agent request succeeds** (proves model credentials — see the open problem).
 - [ ] Model credential route decided: A (token pass-through), B (service credential), or C (platform deploy).

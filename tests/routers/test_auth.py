@@ -25,7 +25,8 @@ def test_login(client, auth_service):
     auth_service.build_login_url.assert_called_once()
 
 
-def test_callback(client, auth_service):
+def test_callback_json_mode(client, auth_service, mocker):
+    mocker.patch.object(SETTINGS.auth, "frontend_url", "")
     tokens = {"access_token": "at", "refresh_token": "rt", "expires_in": 300, "refresh_expires_in": 1800}
     auth_service.exchange_code.return_value = tokens
 
@@ -39,6 +40,36 @@ def test_callback(client, auth_service):
 
     auth_service.exchange_code.side_effect = AuthError("expired state")
     assert client.get("/auth/callback", params={"code": "c", "state": "s"}).status_code == 401
+
+
+def test_callback_redirects_to_frontend(client, auth_service, mocker):
+    mocker.patch.object(SETTINGS.auth, "frontend_url", "http://localhost:3000")
+    tokens = {"access_token": "at", "refresh_token": "rt", "expires_in": 4200, "refresh_expires_in": 14854}
+    auth_service.exchange_code.return_value = tokens
+
+    response = client.get(
+        "/auth/callback", params={"code": "code-1", "state": "state-1"}, follow_redirects=False
+    )
+    assert response.status_code == 302
+    assert response.headers["location"] == (
+        "http://localhost:3000/auth/callback"
+        "#access_token=at&refresh_token=rt&expires_in=4200&refresh_expires_in=14854"
+    )
+
+
+def test_callback_redirects_errors_to_frontend(client, auth_service, mocker):
+    mocker.patch.object(SETTINGS.auth, "frontend_url", "http://localhost:3000/")
+
+    response = client.get("/auth/callback", params={"error": "access_denied"}, follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "http://localhost:3000/auth/callback#error=access_denied"
+
+    response = client.get("/auth/callback", params={"code": "only-code"}, follow_redirects=False)
+    assert response.headers["location"].endswith("#error=invalid_request")
+
+    auth_service.exchange_code.side_effect = AuthError("expired state")
+    response = client.get("/auth/callback", params={"code": "c", "state": "s"}, follow_redirects=False)
+    assert response.headers["location"].endswith("#error=login_expired")
 
 
 def test_refresh(client, auth_service):

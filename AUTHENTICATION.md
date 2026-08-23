@@ -23,7 +23,7 @@ sequenceDiagram
     B->>API: GET /auth/callback?code=...&state=...
     API->>KC: exchange code for tokens (PKCE)
     KC-->>API: access_token + refresh_token
-    API-->>B: TokenResponse (JSON)
+    API-->>B: 302 to {frontend_url}/auth/callback#access_token=...
 
     Note over B: store tokens, schedule silent refresh
 
@@ -43,21 +43,30 @@ If the user still has a live Keycloak SSO cookie in the browser, the sign-in pag
 
 ### `GET /auth/callback`
 
-Keycloak redirects the browser here after sign-in. The backend exchanges the one-time code and responds with the tokens as JSON:
+Keycloak redirects the browser here after sign-in. The backend exchanges the one-time code and hands the browser back to the frontend with a **302 redirect**, carrying the tokens in the **URL fragment** (never sent to servers, so they stay out of logs and `Referer` headers):
 
-```json
-{
-  "access_token": "eyJhbGciOiJSUzI1NiIs...",
-  "refresh_token": "eyJhbGciOiJIUzUxMiIs...",
-  "expires_in": 4200,
-  "refresh_expires_in": 14854,
-  "token_type": "Bearer"
-}
+```
+302 Location:
+{auth.frontend_url}/auth/callback#access_token=...&refresh_token=...&expires_in=4200&refresh_expires_in=14854
 ```
 
-> ⚠️ **Coordination point:** right now this endpoint returns raw JSON in the browser tab. For a real SPA you will probably want it to instead redirect back to a frontend route (e.g. `https://app.example/#access_token=...` or a `?code=` handoff) so your app can pick the tokens up. Tell the backend team what URL/format you want and we'll adapt the callback — it's a small change.
+The frontend route reads `window.location.hash`, stores the tokens, and should then clear the fragment (`history.replaceState`) so tokens don't linger in the address bar / history.
 
-Errors: `401` if Keycloak reported an error or the login state expired (user took >10 min, or the backend restarted mid-login) — just send the user to `/auth/login` again.
+The target comes from config: `auth.frontend_url` (env `AUTH_FRONTEND_URL`), e.g. `http://localhost:3000` in dev. **When it is empty** the endpoint falls back to returning the tokens as `TokenResponse` JSON in the tab — handy for manual/dev use without a frontend.
+
+**Errors also redirect** (when `frontend_url` is set), so the user never sees a dead-end JSON page:
+
+```
+{auth.frontend_url}/auth/callback#error=<code>
+```
+
+| `error` code | Meaning | Frontend reaction |
+|---|---|---|
+| `login_expired` | Login state expired (>10 min) or backend restarted mid-login | Send the user to `/auth/login` again |
+| `invalid_request` | Callback hit without `code`/`state` | Send the user to `/auth/login` again |
+| anything else | Keycloak's own error code passed through (e.g. `access_denied`) | Show a "sign-in failed" message with retry |
+
+(Without `frontend_url` these are a `401`/`400` JSON response instead.)
 
 ### `POST /auth/refresh`
 
@@ -160,7 +169,7 @@ auth:
 
 turns authentication off: no header needed, every request runs as a stub user with `user_id = "local-dev"`. Useful for local frontend development without VPN/SSO access. **Must be `true` in any shared or production deployment.**
 
-Other knobs (env vars `AUTH_ENABLED`, `AUTH_ISSUER`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI` override the YAML): `redirect_uri` is normally derived from the incoming request, but must be set explicitly when the backend sits behind a reverse proxy, and the resulting URL must be whitelisted on the Keycloak client.
+Other knobs (env vars `AUTH_ENABLED`, `AUTH_ISSUER`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_FRONTEND_URL` override the YAML): `redirect_uri` is normally derived from the incoming request, but must be set explicitly when the backend sits behind a reverse proxy, and the resulting URL must be whitelisted on the Keycloak client. `frontend_url` is where `/auth/callback` redirects with the tokens — set it per environment to the frontend's origin.
 
 ---
 

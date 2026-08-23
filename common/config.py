@@ -23,6 +23,7 @@ _ENV_MAP = {
     "AUTH_ISSUER": ("auth.issuer", str),
     "AUTH_CLIENT_ID": ("auth.client_id", str),
     "AUTH_REDIRECT_URI": ("auth.redirect_uri", str),
+    "AUTH_FRONTEND_URL": ("auth.frontend_url", str),
     "SESSION_DB_HOST": ("session_db.host", str),
     "SESSION_DB_PORT": ("session_db.port", int),
     "SESSION_DB_NAME": ("session_db.name", str),
@@ -85,6 +86,7 @@ class AuthConfig(BaseModel):
     issuer: str = "https://genai.sec.samsung.net/iam-keycloak/realms/fabrix"
     client_id: str = "fabrix-adk"
     redirect_uri: str = ""  # empty -> built from the incoming request URL
+    frontend_url: str = ""  # empty -> /auth/callback answers with JSON; set -> 302 to {frontend_url}/auth/callback
 
 
 class SessionDBConfig(BaseModel):
