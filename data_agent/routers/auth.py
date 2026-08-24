@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# The fabrix-adk Keycloak client whitelists "http://localhost:53862/callback" (the URI
+# fadk registers), so the callback is also served unprefixed at /callback. Keycloak only
+# redirects to registered URIs, so the path cannot be chosen freely.
+alias_router = APIRouter(tags=["auth"])
+
 
 def _redirect_uri(request: Request) -> str:
     return SETTINGS.auth.redirect_uri or str(request.url_for("auth_callback"))
@@ -72,6 +77,18 @@ async def callback(
         fields = ("access_token", "refresh_token", "expires_in", "refresh_expires_in")
         return _frontend_redirect({field: tokens[field] for field in fields if field in tokens})
     return TokenResponse(**tokens)
+
+
+@alias_router.get("/callback", response_model=None, name="auth_callback_alias", include_in_schema=False)
+async def callback_alias(
+        request: Request,
+        auth_service: Annotated[AuthService, Depends(get_auth_service)],
+        code: Annotated[str | None, Query()] = None,
+        state: Annotated[str | None, Query()] = None,
+        error: Annotated[str | None, Query()] = None,
+) -> RedirectResponse | TokenResponse:
+    """Same callback under the whitelisted /callback path (see alias_router)."""
+    return await callback(request, auth_service, code, state, error)
 
 
 @router.post("/refresh", response_model=TokenResponse)

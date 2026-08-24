@@ -5,10 +5,16 @@ import pytest
 from common.config import SETTINGS
 from common.constants import APP_NAME
 from data_agent.schemas import RenameSessionRequest
-from data_agent.services.db_session import DBSessionService, create_session_store
+from data_agent.services.db_session import (
+    STALE_SESSION_ATTEMPTS, DBSessionService, SessionNotReadyError, create_session_store
+)
+from data_agent.services.session_guard import SessionBusyError, SessionGuard
 from data_agent.utils import convert_unix_to_datetime
 
 TIMESTAMP = 1_700_000_000.0
+STALE_ERROR = ValueError(
+    "The session has been modified in storage since it was loaded. Please reload the session."
+)
 
 
 def _user_event(text):
@@ -19,12 +25,12 @@ def _model_event(text="model answer"):
     return SimpleNamespace(author="root_agent", content=SimpleNamespace(parts=[SimpleNamespace(text=text)]))
 
 
-def _session(session_id="s1", events=None):
+def _session(session_id="s1", events=None, state=None):
     return SimpleNamespace(
         id=session_id,
         app_name=APP_NAME,
         user_id="u1",
-        state={"session_title": "Old"},
+        state=state if state is not None else {},
         events=events if events is not None else [],
         last_update_time=TIMESTAMP,
     )
@@ -47,8 +53,15 @@ def system_runner(mocker):
 
 
 @pytest.fixture
-def service(session_service, system_runner):
-    return DBSessionService(session_service=session_service, system_runner=system_runner)
+def session_guard():
+    return SessionGuard()
+
+
+@pytest.fixture
+def service(session_service, system_runner, session_guard):
+    return DBSessionService(
+        session_service=session_service, system_runner=system_runner, session_guard=session_guard
+    )
 
 
 def test_create_session_store(mocker):
@@ -123,6 +136,82 @@ class TestDBSessionService:
             await service.create_session_title(user_id="u1", session_id="s1")
 
     @pytest.mark.asyncio
+    async def test_create_session_title_returns_the_stored_title(self, service, session_service, system_runner):
+        """A polled endpoint must not regenerate what is already there."""
+        session_service.get_session.return_value = _session(
+            events=[_user_event("what is in the bucket?")], state={"session_title": "Stored"}
+        )
+
+        response = await service.create_session_title(user_id="u1", session_id="s1")
+
+        assert response.session_title == "Stored"
+        system_runner.create_session_title.assert_not_awaited()
+        session_service.append_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_session_title_without_a_user_message(self, service, session_service, system_runner):
+        session_service.get_session.return_value = _session(events=[_model_event()])
+
+        with pytest.raises(SessionNotReadyError):
+            await service.create_session_title(user_id="u1", session_id="s1")
+
+        system_runner.create_session_title.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_session_title_while_a_run_holds_the_session(
+            self, service, session_service, system_runner, session_guard
+    ):
+        session_service.get_session.return_value = _session(events=[_user_event("hello")])
+
+        async with session_guard.hold("s1"):
+            with pytest.raises(SessionBusyError):
+                await service.create_session_title(user_id="u1", session_id="s1")
+
+        system_runner.create_session_title.assert_not_awaited()
+        session_service.append_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_session_title_drops_the_write_when_another_writer_won(
+            self, service, session_service, system_runner
+    ):
+        """The title is generated off a snapshot, so a winner may appear before the append."""
+        untitled = _session(events=[_user_event("hello")])
+        titled = _session(events=[_user_event("hello")], state={"session_title": "Winner"})
+        session_service.get_session.side_effect = [untitled, titled]
+
+        response = await service.create_session_title(user_id="u1", session_id="s1")
+
+        assert response.session_title == "Winner"
+        system_runner.create_session_title.assert_awaited_once()
+        session_service.append_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_session_title_retries_a_stale_append(self, service, session_service):
+        session_service.get_session.return_value = _session(events=[_user_event("hello")])
+        session_service.append_event.side_effect = [STALE_ERROR, None]
+
+        response = await service.create_session_title(user_id="u1", session_id="s1")
+
+        assert response.session_title == "Generated Title"
+        assert session_service.append_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_create_session_title_gives_up_on_a_permanently_stale_session(self, service, session_service):
+        session_service.get_session.return_value = _session(events=[_user_event("hello")])
+        session_service.append_event.side_effect = STALE_ERROR
+
+        with pytest.raises(ValueError):
+            await service.create_session_title(user_id="u1", session_id="s1")
+
+        assert session_service.append_event.await_count == STALE_SESSION_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_ensure_session_title_swallows_failures(self, service, session_service):
+        session_service.get_session.side_effect = RuntimeError("db down")
+
+        await service.ensure_session_title(user_id="u1", session_id="s1")
+
+    @pytest.mark.asyncio
     async def test_rename_session_title(self, service, session_service):
         session = _session()
         session_service.get_session.return_value = session
@@ -136,6 +225,33 @@ class TestDBSessionService:
         session_service.get_session.return_value = None
         with pytest.raises(ValueError):
             await service.rename_session_title(user_id="u1", session_id="s1", request=RenameSessionRequest(session_title="New Title"))
+
+    @pytest.mark.asyncio
+    async def test_rename_session_title_overwrites_an_existing_title(self, service, session_service):
+        """Unlike creation, an explicit rename always wins over what is stored."""
+        session_service.get_session.return_value = _session(state={"session_title": "Old"})
+
+        await service.rename_session_title(
+            user_id="u1", session_id="s1", request=RenameSessionRequest(session_title="New Title")
+        )
+
+        _, event = session_service.append_event.await_args.args
+        assert event.actions.state_delta == {"session_title": "New Title"}
+
+    @pytest.mark.asyncio
+    async def test_rename_session_title_waits_out_a_busy_session(
+            self, service, session_service, session_guard, mocker
+    ):
+        session_service.get_session.return_value = _session()
+        mocker.patch("data_agent.services.db_session.SESSION_WRITE_TIMEOUT", 0.01)
+
+        async with session_guard.hold("s1"):
+            with pytest.raises(SessionBusyError):
+                await service.rename_session_title(
+                    user_id="u1", session_id="s1", request=RenameSessionRequest(session_title="New Title")
+                )
+
+        session_service.append_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_session(self, service, session_service):

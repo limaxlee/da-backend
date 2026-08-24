@@ -6,7 +6,7 @@ from data_agent.dependencies import get_db_session_service, require_path_user
 from data_agent.schemas import (
     SessionInfo, ListSessionsResponse, CreateSessionResponse, RenameSessionRequest, CreateSessionTitleResponse
 )
-from data_agent.services import DBSessionService
+from data_agent.services import DBSessionService, SessionBusyError, SessionNotReadyError
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,12 @@ async def create_session_title(
 ):
     try:
         return await db_session_service.create_session_title(user_id, session_id)
+    except (SessionBusyError, SessionNotReadyError) as e:
+        # Both are transient: the run has to finish, or the first user message has to
+        # reach storage. Clients poll this endpoint, so it is a retry, not a failure.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(e), headers={"Retry-After": "5"}
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
@@ -73,6 +79,10 @@ async def rename_session_title(
 ):
     try:
         await db_session_service.rename_session_title(user_id, session_id, request)
+    except SessionBusyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(e), headers={"Retry-After": "5"}
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:

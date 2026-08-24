@@ -1,0 +1,33 @@
+server_port: 9999
+
+auth:
+  enabled: true
+  issuer: https://genai.sec.samsung.net/iam-keycloak/realms/fabrix
+  client_id: fabrix-adk
+  redirect_uri: "http://localhost:53862/callback"  # must be whitelisted on the fabrix-adk Keycloak client; this is the one fadk registers
+  frontend_url: http://localhost:3000  # where /auth/callback redirects with tokens; empty -> JSON in the tab
+
+mongodb_mcp:
+  host: localhost
+  port: 8446
+
+milvus_mcp:
+  host: localhost
+  port: 8443
+
+session_db:
+  host: 10.240.35.173
+  port: 5432
+  name: cosmoData
+
+object_storage:
+  bucket: cosmo-storage-develop
+  endpoint: https://gage.ap-northeast-2.samsungspc.com
+  access_key: AKIA5PMO9S8UVFAFT68P
+  secret_key: gCBynEY51EVVuV901dEybGl8JnwoPkQy9YK7AbjW
+
+lab_id: ...
+tenant_code: ...
+base_url: ...
+otel_enabled: false
+log_level: INFO

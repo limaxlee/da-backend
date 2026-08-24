@@ -43,10 +43,24 @@ def test_get_session_store(mocker):
         dependencies.get_session_store.cache_clear()
 
 
+def test_get_session_guard(mocker):
+    guard_cls = mocker.patch.object(dependencies, "SessionGuard")
+    dependencies.get_session_guard.cache_clear()
+    try:
+        first = dependencies.get_session_guard()
+
+        assert first is guard_cls.return_value
+        assert dependencies.get_session_guard() is first
+        guard_cls.assert_called_once_with()
+    finally:
+        dependencies.get_session_guard.cache_clear()
+
+
 def test_get_db_session_service(mocker):
     service_cls = mocker.patch.object(dependencies, "DBSessionService")
     system_runner_cls = mocker.patch.object(dependencies, "SystemRunner")
     get_session_store = mocker.patch.object(dependencies, "get_session_store")
+    get_session_guard = mocker.patch.object(dependencies, "get_session_guard")
     dependencies.get_db_session_service.cache_clear()
     try:
         first = dependencies.get_db_session_service()
@@ -56,6 +70,7 @@ def test_get_db_session_service(mocker):
         service_cls.assert_called_once_with(
             session_service=get_session_store.return_value,
             system_runner=system_runner_cls.return_value,
+            session_guard=get_session_guard.return_value,
         )
     finally:
         dependencies.get_db_session_service.cache_clear()
@@ -66,6 +81,8 @@ def test_get_agent_runner(mocker):
     artifact_cls = mocker.patch.object(dependencies, "OSArtifactService")
     get_session_store = mocker.patch.object(dependencies, "get_session_store")
     get_object_storage = mocker.patch.object(dependencies, "get_object_storage")
+    get_db_session_service = mocker.patch.object(dependencies, "get_db_session_service")
+    get_session_guard = mocker.patch.object(dependencies, "get_session_guard")
     dependencies.get_agent_runner.cache_clear()
     try:
         first = dependencies.get_agent_runner()
@@ -76,6 +93,8 @@ def test_get_agent_runner(mocker):
         runner_cls.assert_called_once_with(
             session_service=get_session_store.return_value,
             artifact_service=artifact_cls.return_value,
+            db_session_service=get_db_session_service.return_value,
+            session_guard=get_session_guard.return_value,
         )
     finally:
         dependencies.get_agent_runner.cache_clear()

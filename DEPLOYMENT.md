@@ -108,7 +108,7 @@ Every variable maps to a `config.yaml` key (see `_ENV_MAP` in [common/config.py]
 | `AUTH_ENABLED` | `auth.enabled` | Keep `true` in production; `false` is a local-dev stub |
 | `AUTH_ISSUER` | `auth.issuer` | Fabrix Keycloak realm URL |
 | `AUTH_CLIENT_ID` | `auth.client_id` | `fabrix-adk` |
-| `AUTH_REDIRECT_URI` | `auth.redirect_uri` | **Set explicitly behind a reverse proxy** — empty means "derive from the incoming request URL", which is wrong behind TLS-terminating proxies |
+| `AUTH_REDIRECT_URI` | `auth.redirect_uri` | **Always set explicitly, and it must be registered on the Keycloak client** — see [The redirect URI is not yours to choose](#the-redirect-uri-is-not-yours-to-choose). Empty means "derive from the incoming request URL", which is wrong behind TLS-terminating proxies |
 | `AUTH_FRONTEND_URL` | `auth.frontend_url` | Frontend origin that `/auth/callback` 302-redirects to with the tokens in the URL fragment (e.g. `https://app.example`); empty falls back to JSON in the tab |
 | `SESSION_DB_HOST` / `SESSION_DB_PORT` / `SESSION_DB_NAME` | `session_db.*` | Postgres session store |
 | `OBJECT_STORAGE_BUCKET` / `OBJECT_STORAGE_ENDPOINT` | `object_storage.*` | |
@@ -117,6 +117,76 @@ Every variable maps to a `config.yaml` key (see `_ENV_MAP` in [common/config.py]
 ### Networking
 
 Inside a container, `localhost` is the container itself. The development config points both MCP servers at `localhost` — in production these must be the real service hostnames (or Docker network aliases / compose service names). The same applies to the Postgres host and object storage endpoint.
+
+### The redirect URI is not yours to choose
+
+Keycloak redirects only to URIs registered on the `fabrix-adk` client, and that list belongs to the FabriX platform team. The only loopback URI known to be registered is the `fadk` CLI's hardcoded default (`fabrix/common/auth/pkce_storage.py`):
+
+```python
+_DEFAULT_KEYCLOAK_REDIRECT_URI = "http://localhost:53862/callback"
+```
+
+Local dev borrows it by running the backend on port 53862 (see [AUTHENTICATION.md](AUTHENTICATION.md)). **That does not survive containerization** — a deployed backend is not on the user's `localhost`. Note what does and does not depend on registration:
+
+| Capability | Needs a registered redirect URI? |
+|---|---|
+| Verifying bearer tokens (`/auth/me`, all `/apps/...`) | **No** — JWKS is public, verification is local |
+| `POST /auth/refresh` | **No** — no browser redirect involved |
+| `GET /auth/login` → `GET /auth/callback` | **Yes** — Keycloak refuses unregistered URIs |
+
+So a container can serve the whole authenticated API from day one; only the browser sign-in leg is blocked. Three ways to unblock it, best first:
+
+1. **Request a dedicated Keycloak client** for this backend, with this environment's callback URL as its valid redirect URI. Cleanest: independent of the CLI's client, and per-environment URIs can be added without touching `fabrix-adk`.
+2. **Ask for this environment's URL to be added to `fabrix-adk`.** Faster, but it is a shared CLI client — the platform team may reasonably decline.
+3. **Skip the backend's browser leg entirely.** The backend is a resource server; if the frontend obtains a Fabrix token by other means, `/auth/login` is never called and nothing else changes.
+
+Whichever route: the URI given to the platform team must be **byte-identical** to `AUTH_REDIRECT_URI`, including scheme, host, port, and trailing-slash form — Keycloak matching is exact, and the same string is replayed at token exchange ([auth.py](data_agent/routers/auth.py)). Register the `/auth/callback` path; the unprefixed `/callback` alias exists only for the CLI-registered dev URI.
+
+Until one of these lands, deploy with `AUTH_REDIRECT_URI` set anyway and treat `/auth/login` as known-broken in that environment.
+
+#### What to send the platform team
+
+Nothing in this repository can add a redirect URI — the list lives in the Keycloak admin console for the `fabrix` realm. Fill in the two hostnames and send:
+
+> **Subject: Keycloak client for COSMO Data Agent Backend**
+>
+> We run a backend service (custom FastAPI, deployed as a container) that signs users in against the `fabrix` realm with OpenID Connect Authorization Code + PKCE (S256), exactly like `fadk login`. The resulting access tokens are also the bearer tokens for our own REST API, which verifies them locally against the realm JWKS.
+>
+> We would like a **dedicated public client** for this service rather than reusing `fabrix-adk`:
+>
+> - Realm: `fabrix`
+> - Client ID: `cosmo-data-agent` (or whatever naming you prefer)
+> - Client type: **public** (no client secret), Standard Flow enabled, PKCE required, method `S256`
+> - Valid redirect URI: `https://<backend-host>/auth/callback`
+> - Web origins: `https://<frontend-host>`
+> - Scopes: `openid profile email`
+>
+> If policy requires a confidential client with a secret instead, please say so — we will add secret handling on our side.
+>
+> If a dedicated client is not possible, the fallback ask is to add `https://<backend-host>/auth/callback` to the existing `fabrix-adk` client's valid redirect URIs.
+
+When they reply:
+
+- New `client_id` → set `AUTH_CLIENT_ID` alongside `AUTH_REDIRECT_URI`.
+- **Confidential client (a secret was issued)** → this needs a code change first: [auth_service.py](data_agent/services/auth_service.py) sends `client_id` only, with no `client_secret`, on both the token exchange and the refresh call. Keycloak rejects a confidential client without one.
+
+Quick way to check whether a URI is registered, before deploying anything: open
+
+```
+https://genai.sec.samsung.net/iam-keycloak/realms/fabrix/protocol/openid-connect/auth?response_type=code&client_id=<client>&redirect_uri=<url-encoded-uri>&scope=openid+profile+email&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256
+```
+
+in a browser. A sign-in page (or an instant redirect) means it is registered; a Keycloak *"Invalid parameter: redirect_uri"* page means it is not.
+
+### Login state is in-process — do not scale the login leg
+
+The PKCE `code_verifier` is held in a dict in `AuthService` ([data_agent/services/auth_service.py](data_agent/services/auth_service.py)), so `/auth/login` and the matching `/auth/callback` **must hit the same process**. Consequences:
+
+- Run **one uvicorn worker** (the current entry point does; do not add `--workers`).
+- With more than one replica, either keep sign-in on a single instance or enable sticky sessions at the load balancer — otherwise logins fail intermittently with `login_expired`.
+- Any restart (including rolling deploys) drops in-flight logins; users retry and succeed. Harmless, but it explains sporadic `login_expired` right after a deploy.
+
+Moving this state to a signed cookie or Redis removes the constraint and is the prerequisite for scaling out.
 
 ## Run
 
@@ -189,8 +259,10 @@ Choose this route only if you are willing to restructure into a standard workspa
 - [ ] Image builds cleanly (internal pip index resolves `fabrix-adk`).
 - [ ] Production `config.yaml` contains no secrets; secrets injected via `docker run -e`.
 - [ ] MCP hosts, Postgres host, and object storage endpoint are reachable from inside the container (not `localhost`).
-- [ ] `AUTH_REDIRECT_URI` set explicitly if behind a reverse proxy.
-- [ ] `AUTH_FRONTEND_URL` points at this environment's frontend origin (and the redirect URI is whitelisted on the Keycloak client).
+- [ ] `AUTH_REDIRECT_URI` set explicitly (never left at the dev value `http://localhost:53862/callback`).
+- [ ] That exact URI is **registered on the Keycloak client** by the FabriX platform team — or `/auth/login` is accepted as non-functional in this environment.
+- [ ] Single worker, and sign-in traffic not spread across replicas without sticky sessions.
+- [ ] `AUTH_FRONTEND_URL` points at this environment's frontend origin.
 - [ ] `/health` responds after start.
 - [ ] **One real agent request succeeds** (proves model credentials — see the open problem).
 - [ ] Model credential route decided: A (token pass-through), B (service credential), or C (platform deploy).

@@ -6,6 +6,9 @@ APP_NAME = "data_agent"
 MODEL_NAME_OR_ID = "019f27d3-e606-7ed2-92e9-c49d5cfe1370"  # Gemma4
 
 USER_AUTHOR = "user"
+SYSTEM_AUTHOR = "system"
+
+SESSION_TITLE_KEY = "session_title"
 
 SYSTEM_APP_NAME = "system_agent"
 SYSTEM_MODEL_NAME_OR_ID = "019f27d3-e606-7ed2-92e9-c49d5cfe1370"  # Gemma4

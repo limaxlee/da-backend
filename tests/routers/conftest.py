@@ -33,6 +33,7 @@ def db_session_service(mocker):
         list_sessions=mocker.AsyncMock(),
         create_session=mocker.AsyncMock(),
         create_session_title=mocker.AsyncMock(),
+        ensure_session_title=mocker.AsyncMock(),
         rename_session_title=mocker.AsyncMock(),
         get_session=mocker.AsyncMock(),
         delete_session=mocker.AsyncMock(),

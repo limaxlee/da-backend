@@ -8,7 +8,7 @@ from google.adk.sessions import BaseSessionService
 from common.config import SETTINGS
 from data_agent.schemas import CurrentUser
 from data_agent.services import (
-    AgentRunner, AuthError, AuthService, DBSessionService, OSArtifactService, SystemRunner,
+    AgentRunner, AuthError, AuthService, DBSessionService, OSArtifactService, SessionGuard, SystemRunner,
     create_session_store, current_fabrix_token
 )
 from data_agent.storage import ObjectStorage
@@ -27,15 +27,27 @@ def get_session_store() -> BaseSessionService:
 
 
 @lru_cache
+def get_session_guard() -> SessionGuard:
+    """Shared by every writer of a session row -- a per-request guard would guard nothing."""
+    return SessionGuard()
+
+
+@lru_cache
 def get_db_session_service() -> DBSessionService:
-    return DBSessionService(session_service=get_session_store(), system_runner=SystemRunner())
+    return DBSessionService(
+        session_service=get_session_store(),
+        system_runner=SystemRunner(),
+        session_guard=get_session_guard()
+    )
 
 
 @lru_cache
 def get_agent_runner() -> AgentRunner:
     return AgentRunner(
         session_service=get_session_store(),
-        artifact_service=OSArtifactService(storage=get_object_storage())
+        artifact_service=OSArtifactService(storage=get_object_storage()),
+        db_session_service=get_db_session_service(),
+        session_guard=get_session_guard()
     )
 
 

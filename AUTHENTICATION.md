@@ -169,7 +169,29 @@ auth:
 
 turns authentication off: no header needed, every request runs as a stub user with `user_id = "local-dev"`. Useful for local frontend development without VPN/SSO access. **Must be `true` in any shared or production deployment.**
 
-Other knobs (env vars `AUTH_ENABLED`, `AUTH_ISSUER`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_FRONTEND_URL` override the YAML): `redirect_uri` is normally derived from the incoming request, but must be set explicitly when the backend sits behind a reverse proxy, and the resulting URL must be whitelisted on the Keycloak client. `frontend_url` is where `/auth/callback` redirects with the tokens — set it per environment to the frontend's origin.
+Other knobs (env vars `AUTH_ENABLED`, `AUTH_ISSUER`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_FRONTEND_URL` override the YAML). `frontend_url` is where `/auth/callback` redirects with the tokens — set it per environment to the frontend's origin.
+
+### `redirect_uri` — not a free choice
+
+Keycloak only redirects to URIs registered on the `fabrix-adk` client, and that list is owned by the Fabrix platform team, not by this repo. The one loopback URI known to be registered is the one the `fadk` CLI uses — a fixed constant in `fabrix/common/auth/pkce_storage.py`:
+
+```python
+_DEFAULT_KEYCLOAK_REDIRECT_URI = "http://localhost:53862/callback"
+```
+
+So for local development the backend must **listen on port 53862** and serve the callback at the bare `/callback` path — which it does: the same handler is registered twice, at `/auth/callback` and (unprefixed, hidden from `/docs`) at `/callback`.
+
+Pick anything else — `http://localhost:9999/auth/callback`, a different port — and Keycloak answers *"Invalid parameter: redirect_uri"* before any sign-in page appears. Deploying anywhere other than localhost therefore requires the platform team to register that environment's callback URL first; it is not a config-only change.
+
+Note that the backend and `fadk login` both want port 53862, so they cannot run at the same time — stop the server before running `fadk login`.
+
+Failure symptoms worth recognising:
+
+| What you see | Cause |
+|---|---|
+| Keycloak-branded *"Invalid parameter: redirect_uri"* | `redirect_uri` is not registered on the client |
+| Browser can't reach the page, address bar shows `.../callback?code=...` | redirect_uri is registered and valid, but nothing is listening on that port |
+| Swagger `/docs` "Try it out" fails on `/auth/login` | Expected — it's an XHR, and Keycloak sends no CORS headers. Use the address bar |
 
 ---
 

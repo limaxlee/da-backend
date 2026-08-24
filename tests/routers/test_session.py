@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from data_agent.schemas import (
     CreateSessionResponse, CreateSessionTitleResponse, ListSessionsResponse, SessionInfo
 )
+from data_agent.services import SessionBusyError, SessionNotReadyError
 
 LAST_UPDATE = datetime(2026, 8, 23, tzinfo=timezone.utc)
 
@@ -53,11 +54,22 @@ def test_create_session_title(client, db_session_service):
     assert response.json() == {"session_title": "Generated"}
     db_session_service.create_session_title.assert_awaited_once_with("user-1", "s1")
 
-    db_session_service.create_session_title.side_effect = ValueError("no user message")
+    db_session_service.create_session_title.side_effect = ValueError("unknown session")
     assert client.post("/apps/users/user-1/sessions/s1/title").status_code == 400
 
     db_session_service.create_session_title.side_effect = RuntimeError("db down")
     assert client.post("/apps/users/user-1/sessions/s1/title").status_code == 500
+
+
+def test_create_session_title_reports_transient_states_as_retryable(client, db_session_service):
+    """Clients poll this endpoint; a run in flight or a session without a message is not a failure."""
+    for error in (SessionBusyError("run in flight"), SessionNotReadyError("no user message yet")):
+        db_session_service.create_session_title.side_effect = error
+
+        response = client.post("/apps/users/user-1/sessions/s1/title")
+
+        assert response.status_code == 409
+        assert response.headers["Retry-After"] == "5"
 
 
 def test_rename_session_title(client, db_session_service):
@@ -67,6 +79,11 @@ def test_rename_session_title(client, db_session_service):
     args = db_session_service.rename_session_title.await_args.args
     assert args[:2] == ("user-1", "s1")
     assert args[2].session_title == "Renamed"
+
+    db_session_service.rename_session_title.side_effect = SessionBusyError("run in flight")
+    assert client.patch(
+        "/apps/users/user-1/sessions/s1/title", params={"session_title": "Renamed"}
+    ).status_code == 409
 
     db_session_service.rename_session_title.side_effect = ValueError("not found")
     assert client.patch(
